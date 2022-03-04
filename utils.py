@@ -7,6 +7,21 @@ from uuid import uuid4
 import os
 
 
+def initialize_postcode_data():
+    df = pd.read_csv("all_us_zipcodes.csv", index_col="code")
+    df.index = df.index.astype(str)
+    return df.to_dict('index')
+
+
+def initialize_all_cities():
+    df = pd.read_csv("all_us_zipcodes.csv", index_col="code")
+    return set(list(map(lambda x: x.lower(), df["city"].to_numpy())))
+
+
+PO_DATA = initialize_postcode_data()
+ALL_CITIES = initialize_all_cities()
+
+
 def create_connection(db_file):
     conn = None
     try:
@@ -50,9 +65,10 @@ def prepare_user(user_string):
     user_dict = {key: (user_dict[key] if key in user_dict.keys() and user_dict[key] is not None else "") for key in FIRST_ORDER_FIELDS}
     address_dict = ast.literal_eval(user_dict["address"])
     address_dict = {key: (address_dict[key] if key in address_dict.keys() and address_dict[key] is not None else "") for key in SECOND_ORDER_FIELDS}
-    user = user_dict | address_dict
-    user_state = fix_state(user["state"].lower())
-    user["state"] = user_state
+
+    # combine original user json with filled address
+    user = user_dict | clean_up_address(address_dict)
+
     return [user[key] for key in FIRST_ORDER_FIELDS + SECOND_ORDER_FIELDS]
 
 
@@ -70,10 +86,36 @@ def generate_report(conn):
 
 
 def fix_state(value):
-    value = value.lower()
-    value = " ".join(value.split()).replace("us-", "")
-    print(value)
+    value = value.replace("us-", "")
     for state in STATES:
         if value == state["Code"].lower() or value == state["State"].lower():
             return state["Code"]
     return ""
+
+
+def get_info_po_code(po_code):
+    if po_code in PO_DATA.keys():
+        return PO_DATA[po_code]
+    else:
+        return {}
+
+
+def dict_clean(_dict):
+    return dict((k, " ".join(v.lower().split()) if isinstance(v, str) else v) for k, v in _dict.items())
+
+
+def clean_up_address(address_dict):
+    address_dict = dict_clean(address_dict)
+    if "postCode" in address_dict.keys():
+        po_info = get_info_po_code(address_dict["postCode"])
+        if not po_info:
+            address_dict["postCode"] = ""
+        if address_dict["city"] not in ALL_CITIES and po_info:
+            address_dict["city"] = po_info["city"].lower()
+        elif address_dict["city"] not in ALL_CITIES:
+            address_dict["city"] = ""
+        if "state" in address_dict.keys():
+            address_dict["state"] = fix_state(address_dict["state"])
+            if address_dict["state"] == "" and po_info:
+                address_dict["state"] = po_info["state"]
+    return address_dict
